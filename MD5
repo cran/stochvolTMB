@@ -1,4 +1,4 @@
-d0c80e40d980e2efaecde33123753ab5 *DESCRIPTION
+2fafb54c249faa367d387352b07eaeda *DESCRIPTION
 e7e8c267f50fc322b79793163f59670a *NAMESPACE
 375a3ccbdb6ba86693053ee2f304e063 *R/data.R
 fd791fe921f8e82b131112ace091d490 *R/demo.R
@@ -14,7 +14,7 @@ c3baa07654aa0b6d4965c7c1d09e0b59 *data/spy.RData
 c25b604209049fb464c2512dffe7a226 *inst/REFERENCES.bib
 a2def0df129a12e3180ec10bc94c3b7d *inst/doc/stochvolTMB_vignette.R
 58d7e600f8216cea6c29eed6d7ab9f87 *inst/doc/stochvolTMB_vignette.Rmd
-f76ef83744d7205562d808438e1c3bd7 *inst/doc/stochvolTMB_vignette.html
+2e27a5691c6ca9be762816a66fb80431 *inst/doc/stochvolTMB_vignette.html
 23798e09d196a0164939613b0b20c3ed *inst/shiny-example/server.R
 95fb15cb82288d5d8f39444096c4c7cf *inst/shiny-example/ui.R
 e888fdec6e35684c9a86ac56cadd1514 *man/demo.Rd
@@ -31,12 +31,12 @@ cd83fad1e6f844119c3f2cc7e84198a7 *man/figures/shinyApp.png
 9f8b6b8552ad270e96c9f3e87def5195 *man/summary.Rd
 ab3b26256a336ddd7df1df69662532f6 *src/Makefile
 dfb3aebeee70246a591874068d9df848 *src/Makefile.wim
-b462ab153b377fdfc86cbaa7a0e50c95 *src/stochvolTMB.cpp
+5d8a268ba986a39ca3bfc6050ab412e1 *src/stochvolTMB.cpp
 495098767d38a4552ab6486fac5be039 *tests/testthat.R
 abac97a5df5c8f2753e856c069930747 *tests/testthat/test-optSV.R
 a1dd39fc7cc23b429efdbc92da758bc7 *tests/testthat/test-simSV.R
 1751172688a356fa930bb7cb8c060436 *tests/testthat/test-volplot.R
-d4d54b6c27e992afad5420f0ec1fd909 *tests/testthat/test_objects/estimate_parameters.rds
+92aa266764e839b46c27fdf849aef977 *tests/testthat/test_objects/estimate_parameters.rds
 a2dda00eb559b9edb467258b7bfec82a *tests/testthat/test_objects/generate_test_parameter_estimates.R
 538cf218546b5e66bb0774115eb695ab *tests/testthat/test_objects/test_parameter_estimates.rds
 1239ea2d5a0b06dbc54ee3a27f50f97f *tests/testthat/test_objects/test_summary.rds

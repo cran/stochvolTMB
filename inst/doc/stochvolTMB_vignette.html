@@ -391,10 +391,10 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 <p>We can investigate the estimate for the degrees of freedom (<code>df</code>) to see if the returns are heavy-tailed</p>
 <div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1"></a><span class="kw">summary</span>(t_dist, <span class="dt">report =</span> <span class="st">&quot;fixed&quot;</span>)</span>
 <span id="cb4-2"><a href="#cb4-2"></a><span class="co">#&gt;      parameter  estimate  std_error    z_value      p_value  type</span></span>
-<span id="cb4-3"><a href="#cb4-3"></a><span class="co">#&gt; 1: log_sigma_y -9.560744 0.20706244 -46.173241 0.000000e+00 fixed</span></span>
-<span id="cb4-4"><a href="#cb4-4"></a><span class="co">#&gt; 2: log_sigma_h -1.683262 0.09806685 -17.164437 4.902139e-66 fixed</span></span>
-<span id="cb4-5"><a href="#cb4-5"></a><span class="co">#&gt; 3:   phi_logit  4.880274 0.26254890  18.588057 4.014613e-77 fixed</span></span>
-<span id="cb4-6"><a href="#cb4-6"></a><span class="co">#&gt; 4:          df 10.086392 2.10225868   4.797883 1.603513e-06 fixed</span></span></code></pre></div>
+<span id="cb4-3"><a href="#cb4-3"></a><span class="co">#&gt; 1: log_sigma_y -4.780371 0.10353121 -46.173236 0.000000e+00 fixed</span></span>
+<span id="cb4-4"><a href="#cb4-4"></a><span class="co">#&gt; 2: log_sigma_h -1.683263 0.09806688 -17.164443 4.901588e-66 fixed</span></span>
+<span id="cb4-5"><a href="#cb4-5"></a><span class="co">#&gt; 3:   phi_logit  4.880275 0.26254873  18.588072 4.013461e-77 fixed</span></span>
+<span id="cb4-6"><a href="#cb4-6"></a><span class="co">#&gt; 4:          df 10.086369 2.10224617   4.797901 1.603371e-06 fixed</span></span></code></pre></div>
 <p>Clearly the returns are more heavy tailed than Gaussian, even when controlling for the stochastic volatility. We can also check for asymmetric returns</p>
 <div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1"></a><span class="kw">summary</span>(skew_gaussian, <span class="dt">report =</span> <span class="st">&quot;fixed&quot;</span>)</span>
 <span id="cb5-2"><a href="#cb5-2"></a><span class="co">#&gt;      parameter  estimate  std_error    z_value      p_value  type</span></span>
