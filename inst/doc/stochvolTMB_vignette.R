@@ -19,7 +19,7 @@ skew_gaussian = estimate_parameters(spy$log_return, model = "skew_gaussian", sil
 leverage = estimate_parameters(spy$log_return, model = "leverage", silent = TRUE)
 
 ## -----------------------------------------------------------------------------
-summary(t_dist, report = "fixed")
+summary(t_dist, report = "transformed")
 
 ## -----------------------------------------------------------------------------
 summary(skew_gaussian, report = "fixed")
@@ -34,10 +34,17 @@ AIC(gaussian,
     skew_gaussian, 
     leverage)
 
-
 ## -----------------------------------------------------------------------------
 plot(leverage, include_ci = TRUE, plot_log = TRUE, dates = spy$date)
 plot(leverage, include_ci = TRUE, plot_log = FALSE, dates = spy$date)
+
+## -----------------------------------------------------------------------------
+
+pred = predict(leverage, steps = 10, include_parameters = TRUE)
+summary(pred)
+
+# plot the forecast
+plot(leverage, forecast = 50) + ggplot2::xlim(3200, nrow(spy) + 50)
 
 ## ----include=FALSE------------------------------------------------------------
 stochvol_gauss <- readRDS("stochvol_gauss.rds")
