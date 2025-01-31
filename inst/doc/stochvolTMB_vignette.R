@@ -1,4 +1,4 @@
-## ---- include = FALSE---------------------------------------------------------
+## ----include = FALSE----------------------------------------------------------
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
@@ -53,13 +53,13 @@ stochvolTMB_gauss  <- estimate_parameters(spy$log_return, "gaussian", silent = T
 stochvolTMB_lev  <- estimate_parameters(spy$log_return, "leverage", silent = TRUE)
 
 ## ----eval=FALSE---------------------------------------------------------------
-#  library(stochvol)
-#  
-#  stochvol_gauss <- svsample(spy$log_return, quiet = T)
-#  stochvolTMB_gauss  <- estimate_parameters(spy$log_return, "gaussian", silent = TRUE)
-#  
-#  stochvol_lev <- svlsample(spy$log_return, quiet = T)
-#  stochvolTMB_lev  <- estimate_parameters(spy$log_return, "leverage", silent = TRUE)
+# library(stochvol)
+# 
+# stochvol_gauss <- svsample(spy$log_return, quiet = T)
+# stochvolTMB_gauss  <- estimate_parameters(spy$log_return, "gaussian", silent = TRUE)
+# 
+# stochvol_lev <- svlsample(spy$log_return, quiet = T)
+# stochvolTMB_lev  <- estimate_parameters(spy$log_return, "leverage", silent = TRUE)
 
 ## -----------------------------------------------------------------------------
 
