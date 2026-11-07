@@ -7,7 +7,7 @@ test_that("Test estimate_parameters.R", {
   # Data --------------------------------------------------------------------
   
   results <- readRDS("test_objects/test_parameter_estimates.rds")
-  models <- c("gaussian", "t", "leverage", "skew_gaussian")
+  models <- c("gaussian", "t", "leverage", "skew_gaussian", "skew_gaussian_leverage", "skew_t", "skew_t_leverage")
 
 # Tests -------------------------------------------------------------------
   opt <- list()
@@ -84,6 +84,87 @@ test_that("Test predict.R", {
   expect_error(summary(pred, quantiles = c(0.025, 1.975)))
   expect_error(summary(pred, quantiles = NA))
   expect_error(summary(pred, quantiles = NULL))
-  
-  
+
+
+})
+
+test_that("Test predict.R for skew_gaussian_leverage", {
+
+# Data ------------------------------------------------------------------------------------------------------------
+
+  param <- list(phi = 0.9, sigma_h = 0.4, sigma_y = 0.2, alpha = -2, rho = -0.7)
+  data <- sim_sv(param = param, nobs = 500, seed = 123, model = "skew_gaussian_leverage")
+  opt <- estimate_parameters(data$y, model = "skew_gaussian_leverage", silent = TRUE)
+
+  set.seed(123)
+  steps <- 10; nsim <- 1000
+  pred <- predict(opt, steps = steps, nsim = nsim, include_parameters = FALSE)
+
+# Tests -----------------------------------------------------------------------------------------------------------
+
+  expect_named(pred, c("y", "h", "h_exp"))
+  expect_equal(dim(pred$y), c(steps, nsim))
+  expect_equal(dim(pred$h), c(steps, nsim))
+
+  # Test with include_parameters = TRUE
+  set.seed(123)
+  pred_with_params <- predict(opt, steps = steps, nsim = nsim, include_parameters = TRUE)
+  expect_named(pred_with_params, c("y", "h", "h_exp"))
+  expect_equal(dim(pred_with_params$y), c(steps, nsim))
+
+})
+
+test_that("skew gaussian models do not get stuck at alpha = 0 or diverge to |rho| = 1", {
+  skip_on_cran()
+
+  param <- list(phi = 0.9, sigma_h = 0.3, sigma_y = 0.2, alpha = 5, rho = -0.8)
+
+  for (model in c("skew_gaussian", "skew_gaussian_leverage")) {
+    for (seed in 1:3) {
+      data <- sim_sv(param = param, nobs = 1000, seed = seed, model = model)
+      opt <- estimate_parameters(data$y, model = model, silent = TRUE)
+      est <- summary(opt, report = "transformed")
+
+      expect_equal(opt$fit$convergence, 0)
+      expect_true(opt$rep$pdHess)
+      expect_gt(est[parameter == "alpha", estimate], 2)
+      if (model == "skew_gaussian_leverage") {
+        expect_lt(abs(est[parameter == "rho", estimate] - param$rho), 0.15)
+      }
+    }
+  }
+
+})
+
+test_that("skewness_to_alpha inverts the skewness of the skew gaussian distribution", {
+
+  alpha <- c(-20, -3, -0.5, 0.1, 1, 8)
+  delta <- alpha / sqrt(1 + alpha^2)
+  mu <- delta * sqrt(2 / pi)
+  skewness <- (4 - pi) / 2 * mu^3 / (1 - mu^2)^(3 / 2)
+
+  expect_equal(skewness_to_alpha(skewness), alpha, tolerance = 1e-8)
+
+})
+
+test_that("S3 methods do not hide stats and utils functions", {
+
+  fit_lm <- stats::lm(dist ~ speed, data = datasets::cars)
+  expect_length(residuals(fit_lm), nrow(datasets::cars))
+  expect_length(coef(fit_lm), 2)
+
+  opt <- readRDS("test_objects/test_summary.rds")
+  est <- coef(opt)
+  expect_true(all(c("sigma_y", "sigma_h", "phi") %in% names(est)))
+  expect_equal(unname(est["phi"]), summary(opt, report = "transformed")[parameter == "phi", estimate])
+  expect_equal(coef(opt, scale = "estimation"), opt$fit$par)
+
+  v <- vcov(opt)
+  expect_equal(dim(v), c(length(est), length(est)))
+  expect_equal(rownames(v), names(est))
+  expect_equal(sqrt(unname(diag(v))), summary(opt, report = "transformed")$std_error)
+  expect_equal(vcov(opt, scale = "estimation"), opt$rep$cov.fixed)
+
+  # With an argument, demo() is utils::demo(); without, it is the deprecated shiny demo
+  expect_error(demo(no_such_topic_xyz), "No demo found for topic")
 })

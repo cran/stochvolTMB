@@ -9,18 +9,24 @@ get_nll <- function(data, model = "gaussian", ...) {
 
   # Starting values for parameters
   param <- list(log_sigma_y = 0,
-                log_sigma_h = 0, 
+                log_sigma_h = 0,
                 logit_phi = 3,
                 log_df_minus_two = if (model == "t") 2 else numeric(0),
-                alpha = if (model %in% c("skew_gaussian")) 0 else numeric(0),
-                logit_rho = if (model %in% c("leverage")) 0 else numeric(0),
+                # Not exactly zero: the map from skewness to alpha has an infinite derivative there
+                logit_skewness = if (model %in% c("skew_gaussian", "skew_gaussian_leverage")) 0.01 else numeric(0),
+                logit_rho = if (model %in% c("leverage", "skew_gaussian_leverage", "skew_t_leverage")) 0 else numeric(0),
+                log_df_left_minus_two = if (model %in% c("skew_t", "skew_t_leverage")) 2 else numeric(0),
+                log_df_right_minus_two = if (model %in% c("skew_t", "skew_t_leverage")) 2 else numeric(0),
                 h = rep(0, length(data)))
   
   data <- list(y = data,
                model = ifelse(model == "gaussian", 0,
-                               ifelse(model == "t", 1, 
-                                      ifelse(model == "skew_gaussian", 2,
-                                             ifelse(model == "leverage", 3, 4)))))
+                              ifelse(model == "t", 1,
+                                     ifelse(model == "skew_gaussian", 2,
+                                            ifelse(model == "leverage", 3,
+                                                   ifelse(model == "skew_gaussian_leverage", 4,
+                                                          ifelse(model == "skew_t", 5,
+                                                                 ifelse(model == "skew_t_leverage", 6, 7))))))))
   
   obj <- TMB::MakeADFun(data = data, parameters = param, random = "h", DLL = "stochvolTMB", ...)
   
@@ -37,19 +43,67 @@ get_nll <- function(data, model = "gaussian", ...) {
 #' The following distributions are implemented for the observed process: 
 #' 
 #' \itemize{
-#' \item Gaussian distribution
-#' \item t-distribution
-#' \item Leverage: Gaussian distribution with leverage where the noise of the latent process is correlated with the
-#'  observational distribution
-#' \item Skew gaussian distribution
+#' \item \code{"gaussian"}: Gaussian distribution.
+#' \item \code{"t"}: t-distribution, scaled to unit variance. Estimates the degrees of freedom \code{df}.
+#' \item \code{"leverage"}: Gaussian distribution where the noise of the latent process is correlated with the
+#'  observational noise. Estimates the correlation \code{rho}.
+#' \item \code{"skew_gaussian"}: Skew gaussian distribution with mean zero and unit variance. Estimates the
+#'  skewness of the observational noise.
+#' \item \code{"skew_gaussian_leverage"}: Skew gaussian distribution with leverage. The skew gaussian return shock
+#'  \code{z_t} drives the volatility shock, \code{eta_t = rho * z_t + sqrt(1 - rho^2) * e_t}, where \code{e_t} is
+#'  standard gaussian. Estimates both the skewness and \code{rho}.
+#' \item \code{"skew_t"}: Skew t distribution of Jones and Faddy (2003), scaled to mean zero and unit variance. The
+#'  left and the right tail have their own degrees of freedom, \code{df_left} and \code{df_right}, so the model
+#'  can have heavier tails for losses than for gains. With equal values it is the \code{"t"} model.
+#' \item \code{"skew_t_leverage"}: Skew t distribution with leverage. As in \code{"skew_gaussian_leverage"}, the
+#'  return shock \code{z_t} drives the volatility shock, \code{eta_t = rho * z_t + sqrt(1 - rho^2) * e_t}. Estimates
+#'  \code{df_left}, \code{df_right} and \code{rho}.
 #' }
 #' 
 #' The parameters is estimated by minimizing the negative log-likelihood (nll) and the latent log-volatility is 
 #' integrated out by applying the Laplace approximation.
-#' 
+#'
+#' @section Skew gaussian models:
+#' The skew gaussian models report two numbers for the asymmetry of the standardized noise \code{z}:
+#' \itemize{
+#' \item \code{alpha}: the shape parameter of the skew normal density. \code{alpha = 0} gives the gaussian
+#'  distribution and \code{alpha -> Inf} the half-gaussian distribution. It has no direct statistical meaning.
+#' \item \code{skewness}: the skewness \code{E[z^3]} of the noise, a monotone function of \code{alpha}. With
+#'  \code{delta = alpha / sqrt(1 + alpha^2)} and \code{mu = delta * sqrt(2 / pi)},
+#'  \code{skewness = (4 - pi) / 2 * mu^3 / (1 - mu^2)^(3 / 2)}. For example, \code{alpha} = 0.5, 1, 2 and 5 give
+#'  \code{skewness} = 0.02, 0.14, 0.45 and 0.85.
+#' }
+#' The models estimate the skewness, not \code{alpha}. Close to zero the skewness grows like \code{alpha^3}, so the
+#' likelihood is flat in \code{alpha} at \code{alpha = 0} and the optimizer does not move from there.
+#'
+#' Use \code{summary(object, report = "transformed")} to get \code{skewness} and \code{alpha} with standard errors.
+#' Use \code{skewness} for inference. Use \code{alpha} when you need the shape parameter, for example in
+#' \code{\link{sim_sv}} or \code{sn::dsn}. Close to zero skewness, \code{alpha} changes fast with the skewness, so
+#' the standard error of \code{alpha} is very large even when the skewness is well determined. In the
+#' "skew_gaussian_leverage" model the skewness is that of the return shock, not of the returns.
+#'
+#' @section Skew t models:
+#' The left tail of the noise decays like a Student t distribution with \code{df_left} degrees of freedom and the
+#' right tail like one with \code{df_right} degrees of freedom. A smaller value means a heavier tail. If
+#' \code{df_left < df_right}, large losses are more likely than large gains of the same size, and the noise is
+#' skewed to the left. Both values are greater than 2, so that the variance exists. They are estimated on the scale
+#' \code{log(df - 2)}.
+#'
+#' A light tail is hard to tell apart from a gaussian tail. If one tail is light, its estimated degrees of freedom
+#' can be very large and have a large standard error, and \code{nlminb} can report false convergence. This means
+#' that the data show no heavy tail on that side. The same is true for \code{df} in the \code{"t"} model. In both
+#' models the degrees of freedom are capped at 10,000, because the density cannot be calculated accurately for larger
+#' values. Short series (a few hundred observations) can also confuse heavy tails with a very noisy log-volatility.
+#'
+#' Hansen's (1994) skewed t distribution is not used, because its log density has a jump in the second
+#' derivative at the mode. This makes the Laplace approximation inaccurate and the optimization unstable.
+#'
+#' @references Jones, M. C. and Faddy, M. J. (2003). A skew extension of the t-distribution, with applications.
+#'   Journal of the Royal Statistical Society: Series B, 65(1), 159-174. \doi{10.1111/1467-9868.00378}
+#'
 #' @param data A vector of observations.
 #' @param model A character specifying the model. Must be one of the following:
-#'  "gaussian", "t", "leverage", "skew_gaussian".
+#'  "gaussian", "t", "leverage", "skew_gaussian", "skew_gaussian_leverage", "skew_t", "skew_t_leverage".
 #' @param opt.control An optional list of parameters for nlminb.
 #' @param ... additional arguments passed to \link[TMB]{MakeADFun}.
 #' 
@@ -70,13 +124,19 @@ get_nll <- function(data, model = "gaussian", ...) {
 #'
 #' # plot estimated volatility with 95 % confidence interval
 #' plot(opt, include_ci = TRUE)
+#'
+#' # skew gaussian model with leverage
+#' opt_sgl <- estimate_parameters(spy$log_return, model = "skew_gaussian_leverage", silent = TRUE)
+#' summary(opt_sgl, report = "transformed")
 #' }
 
 estimate_parameters <- function(data, model = "gaussian", opt.control = NULL, ...) {
   
   if (!is.vector(data)) stop("data needs to be a vector")
   if (!is.character(model)) stop("model has to be a character")
-  if (!(model %in% c("gaussian", "skew_gaussian", "t", "leverage"))) stop("This model is not implemented")
+  if (!(model %in% c("gaussian", "skew_gaussian", "t", "leverage", "skew_gaussian_leverage", "skew_t", "skew_t_leverage"))) {
+    stop("This model is not implemented")
+  }
   
   # create TMB object
   obj <- get_nll(data, model, ...)
@@ -109,7 +169,41 @@ logLik.stochvolTMB <- function(object, ...) {
 }
 
 
-#' Summary tables of model parameters 
+#' Extract parameter estimates and their covariance matrix
+#'
+#' @param object A \code{stochvolTMB} object.
+#' @param scale \code{"natural"} (default) returns the parameters on their natural scale, for example
+#'   \code{sigma_y}, \code{phi} and \code{rho}. Their covariance matrix comes from the delta method.
+#'   \code{"estimation"} returns the parameters on the scale they were estimated, for example \code{log_sigma_y}
+#'   and \code{logit_phi}, with the inverse Hessian as covariance matrix.
+#' @param ... Not used.
+#' @return \code{coef} returns a named vector. \code{vcov} returns a named matrix.
+#' @examples
+#' \donttest{
+#' opt <- estimate_parameters(spy$log_return, model = "leverage", silent = TRUE)
+#' coef(opt)
+#' sqrt(diag(vcov(opt)))
+#' coef(opt, scale = "estimation")
+#' }
+#' @rdname coef.stochvolTMB
+#' @export
+coef.stochvolTMB <- function(object, scale = c("natural", "estimation"), ...) {
+  scale <- match.arg(scale)
+  if (scale == "natural") object$rep$value else object$fit$par
+}
+
+#' @rdname coef.stochvolTMB
+#' @export
+vcov.stochvolTMB <- function(object, scale = c("natural", "estimation"), ...) {
+  scale <- match.arg(scale)
+  if (scale == "estimation") return(object$rep$cov.fixed)
+  cov <- object$rep$cov
+  dimnames(cov) <- list(names(object$rep$value), names(object$rep$value))
+  cov
+}
+
+
+#' Summary tables of model parameters
 #' 
 #' Extract parameters, transformed parameters and latent log volatility along with standard error, z-value and p-value 
 #' 
@@ -192,10 +286,16 @@ print.stochvolTMB <- function(x, ...) {
   cat("standard deviation of observed variable         sigma_y = ", rep[parameter == "sigma_y", estimate], "\n", sep = "")
   if ("df" %in% rep[, parameter])
     cat("degrees of freedom of observed variable        df =", rep[parameter == "df", estimate], "\n")
+  if ("df_left" %in% rep[, parameter]) {
+    cat("degrees of freedom of left tail                 df_left = ", rep[parameter == "df_left", estimate], "\n", sep = "")
+    cat("degrees of freedom of right tail                df_right = ", rep[parameter == "df_right", estimate], "\n", sep = "")
+  }
   if ("rho" %in% rep[, parameter]) 
     cat("leverage effect                                 rho =", rep[parameter == "rho", estimate], "\n")
-  if ("alpha" %in% rep[, parameter]) 
-    cat("skewness of observed variable                   alpha = ", rep[parameter == "alpha", estimate], "\n", sep = "")
+  if ("alpha" %in% rep[, parameter]) {
+    cat("skewness of observed variable                   skewness = ", rep[parameter == "skewness", estimate], "\n", sep = "")
+    cat("shape of skew-gaussian distribution             alpha = ", rep[parameter == "alpha", estimate], "\n", sep = "")
+  }
   
   return(invisible(x))
 }
@@ -229,9 +329,6 @@ predict.stochvolTMB <- function(object, steps = 1L, nsim = 10000, include_parame
     stop("`steps` has to be greater or equal to 1")
   }
   
-  # We need an extra step for the volatility to predict the last log-return
-  if (object$model == "leverage") steps <- steps + 1
-  
   # Get parameter estimates 
   rep <- summary(object)
 
@@ -239,22 +336,30 @@ predict.stochvolTMB <- function(object, steps = 1L, nsim = 10000, include_parame
   if (include_parameters) {
     
     sim_parameters <- simulate_parameters(object, nsim = nsim)
-    if (object$model != "leverage") rho <- 0 else rho <- sim_parameters[, which(colnames(sim_parameters) == "rho")]
+    if (!(object$model %in% c("leverage", "skew_gaussian_leverage", "skew_t_leverage"))) rho <- 0 else rho <- sim_parameters[, which(colnames(sim_parameters) == "rho")]
     if (object$model != "t") df <- Inf else df <-  sim_parameters[, which(colnames(sim_parameters) == "df")]
-    if (object$model != "skew_gaussian") alpha <- 0 else alpha <-  sim_parameters[, which(colnames(sim_parameters) == "alpha")]
+    if (object$model %in% c("skew_t", "skew_t_leverage")) {
+      df_left <- sim_parameters[, which(colnames(sim_parameters) == "df_left")]
+      df_right <- sim_parameters[, which(colnames(sim_parameters) == "df_right")]
+    }
+    if (!(object$model %in% c("skew_gaussian", "skew_gaussian_leverage"))) alpha <- 0 else alpha <-  sim_parameters[, which(colnames(sim_parameters) == "alpha")]
     sigma_y <-  sim_parameters[, which(colnames(sim_parameters) == "sigma_y")]
     sigma_h <- sim_parameters[, which(colnames(sim_parameters) == "sigma_h")]
     phi <- sim_parameters[, which(colnames(sim_parameters) == "phi")]
     
   } else {
-    
-    if (object$model != "leverage") rho <- 0 else rho <- rep[parameter == "rho", estimate]
+
+    if (!(object$model %in% c("leverage", "skew_gaussian_leverage", "skew_t_leverage"))) rho <- 0 else rho <- rep[parameter == "rho", estimate]
     if (object$model != "t") df <- Inf else df <- rep[parameter == "df", estimate]
-    if (object$model != "skew_gaussian") alpha <- 0 else df <- rep[parameter == "alpha", estimate]
+    if (object$model %in% c("skew_t", "skew_t_leverage")) {
+      df_left <- rep[parameter == "df_left", estimate]
+      df_right <- rep[parameter == "df_right", estimate]
+    }
+    if (!(object$model %in% c("skew_gaussian", "skew_gaussian_leverage"))) alpha <- 0 else alpha <- rep[parameter == "alpha", estimate]
     sigma_y <- rep[parameter == "sigma_y", estimate]
     sigma_h <- rep[parameter == "sigma_h", estimate]
     phi <- rep[parameter == "phi", estimate]
-    
+
   }
   
   # Get last estimated volatility and simulate from its distribution to get nsim starting points
@@ -263,45 +368,57 @@ predict.stochvolTMB <- function(object, steps = 1L, nsim = 10000, include_parame
   y_pred <- matrix(0, nrow = steps, ncol = nsim)
   h_start <- stats::rnorm(nsim, h_last$estimate, h_last$std_error)
   
-  # Predict volatility 
-  for (i in 1:steps) {
-    if (i == 1) {
-      h_pred[i, ] <- stats::rnorm(nsim, phi * h_start, sigma_h)
-    } else {
-      h_pred[i, ] <- stats::rnorm(nsim, phi * h_pred[i - 1, ], sigma_h)
-    }
-  }  
-  
-  if (object$model == "leverage") steps <- steps - 1
-  
-  # Predict log-returns
-  for (i in 1:steps) {
-    
-    if (object$model == "skew_gaussian") {
-      
-      delta <- alpha / sqrt(1 + alpha^2)
-      omega <- 1 / sqrt(1 - 2 * delta^2 / pi)
-      xi <- -omega * delta * sqrt(2 / pi)
-      y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * sn::rsn(n = nsim, alpha = alpha, xi = xi, omega = omega)
-      
-    } else if (object$model == "t") {
-      
-      y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * sqrt((df - 2) / df) * stats::rt(nsim, df = df)      
+  if (object$model %in% c("leverage", "skew_gaussian_leverage", "skew_t_leverage")) {
 
-    } else if (object$model == "leverage") {
-      
-      y_pred[i, ] <- sigma_y * exp(h_pred[i, ] / 2) * (rho / sigma_h * (h_pred[i + 1, ] - phi * h_pred[i, ]) + sqrt(1 - rho^2) * stats::rnorm(nsim))
-      
-    } else {
-      
-      y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * stats::rnorm(nsim)
-      
+    # The return shock z drives the next volatility shock, so h and y are simulated jointly. In the leverage model
+    # (z_t, eta_t) is bivariate gaussian with correlation rho, which has the same form.
+    # The first volatility shock comes from the last observed return.
+    y_last <- utils::tail(object$obj$env$data$y, 1)
+    z <- y_last / (sigma_y * exp(h_start / 2))
+    h_prev <- h_start
+    for (i in 1:steps) {
+      h_pred[i, ] <- phi * h_prev + sigma_h * (rho * z + sqrt(1 - rho^2) * stats::rnorm(nsim))
+      z <- switch(object$model,
+                  skew_t_leverage = rskew_t(nsim, df_left, df_right),
+                  skew_gaussian_leverage = rsn_standard(nsim, alpha),
+                  stats::rnorm(nsim))
+      y_pred[i, ] <- sigma_y * exp(h_pred[i, ] / 2) * z
+      h_prev <- h_pred[i, ]
     }
-  }
-  
-  if (object$model == "leverage") {
-    h_pred <- h_pred[1:steps, , drop = FALSE] 
-    y_pred <- y_pred[1:steps, , drop = FALSE]
+
+  } else {
+
+    # Predict volatility 
+    for (i in 1:steps) {
+      if (i == 1) {
+        h_pred[i, ] <- stats::rnorm(nsim, phi * h_start, sigma_h)
+      } else {
+        h_pred[i, ] <- stats::rnorm(nsim, phi * h_pred[i - 1, ], sigma_h)
+      }
+    }  
+
+    # Predict log-returns
+    for (i in 1:steps) {
+
+      if (object$model == "skew_gaussian") {
+
+        y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * rsn_standard(nsim, alpha)
+
+      } else if (object$model == "skew_t") {
+
+        y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * rskew_t(nsim, df_left, df_right)
+
+      } else if (object$model == "t") {
+
+        y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * sqrt((df - 2) / df) * stats::rt(nsim, df = df)
+
+      } else {
+
+        y_pred[i, ] <- exp(h_pred[i, ] / 2) * sigma_y * stats::rnorm(nsim)
+
+      }
+    }
+
   }
     
   

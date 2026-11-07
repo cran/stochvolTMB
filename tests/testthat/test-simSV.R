@@ -8,9 +8,11 @@ test_that("Test sim_sv", {
                 sigma_y = 0.2,
                 df = 5, 
                 alpha = 5,
-                rho = -0.7)
+                rho = -0.7,
+                df_left = 4,
+                df_right = 10)
   nobs <- 1000
-  models <- c("gaussian", "t", "leverage", "skew_gaussian")
+  models <- c("gaussian", "t", "leverage", "skew_gaussian", "skew_gaussian_leverage", "skew_t", "skew_t_leverage")
   
   for (model in models) {
     
@@ -37,11 +39,17 @@ test_that("Test sim_sv", {
   param$phi <- 0.9
   param$df <- 1.9
   expect_error(sim_sv(param, model = "t"))
+
+  param$df_left <- 1.9
+  expect_error(sim_sv(param, model = "skew_t"))
+  param$df_left <- 4
   
   param$rho <- -1.2
   expect_error(sim_sv(param, model = "leverage"))
-  
-  
+  expect_error(sim_sv(param, model = "skew_gaussian_leverage"))
+  expect_error(sim_sv(param, model = "skew_t_leverage"))
+
+
 })
 
 test_that("Test simulate_parameters", {
@@ -50,6 +58,8 @@ test_that("Test simulate_parameters", {
 # Data ------------------------------------------------------------------------------------------------------------
   data(spy)
   mod <- estimate_parameters(spy$log_return) 
+  # Fixed seed: the tolerance below is tight, so the result must not depend on what earlier tests drew
+  set.seed(1)
   sim <- simulate_parameters(mod, nsim = 1000)
   rep <-  summary(mod, report = "transformed")
   
@@ -66,8 +76,9 @@ test_that("Test simulate_parameters", {
 
   # Simulated values should be equal to estimated
   
-  expect_equal(sim_mean, mod_est, tolerance = 1e-03)
-  expect_equal(sim_sd, mod_sd, tolerance = 1e-03)
+  # With 1000 draws the sd has a relative sampling error of about 1 / sqrt(2 * 1000) = 2%
+  expect_equal(sim_mean, mod_est, tolerance = 0.02)
+  expect_equal(sim_sd, mod_sd, tolerance = 0.1)
   expect_equal(colnames(sim), rep$parameter)
   
   

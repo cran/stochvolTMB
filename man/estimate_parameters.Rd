@@ -10,7 +10,7 @@ estimate_parameters(data, model = "gaussian", opt.control = NULL, ...)
 \item{data}{A vector of observations.}
 
 \item{model}{A character specifying the model. Must be one of the following:
-"gaussian", "t", "leverage", "skew_gaussian".}
+"gaussian", "t", "leverage", "skew_gaussian", "skew_gaussian_leverage", "skew_t", "skew_t_leverage".}
 
 \item{opt.control}{An optional list of parameters for nlminb.}
 
@@ -26,16 +26,65 @@ autoregressive process of order one with normally distributed noise.
 The following distributions are implemented for the observed process: 
 
 \itemize{
-\item Gaussian distribution
-\item t-distribution
-\item Leverage: Gaussian distribution with leverage where the noise of the latent process is correlated with the
- observational distribution
-\item Skew gaussian distribution
+\item \code{"gaussian"}: Gaussian distribution.
+\item \code{"t"}: t-distribution, scaled to unit variance. Estimates the degrees of freedom \code{df}.
+\item \code{"leverage"}: Gaussian distribution where the noise of the latent process is correlated with the
+ observational noise. Estimates the correlation \code{rho}.
+\item \code{"skew_gaussian"}: Skew gaussian distribution with mean zero and unit variance. Estimates the
+ skewness of the observational noise.
+\item \code{"skew_gaussian_leverage"}: Skew gaussian distribution with leverage. The skew gaussian return shock
+ \code{z_t} drives the volatility shock, \code{eta_t = rho * z_t + sqrt(1 - rho^2) * e_t}, where \code{e_t} is
+ standard gaussian. Estimates both the skewness and \code{rho}.
+\item \code{"skew_t"}: Skew t distribution of Jones and Faddy (2003), scaled to mean zero and unit variance. The
+ left and the right tail have their own degrees of freedom, \code{df_left} and \code{df_right}, so the model
+ can have heavier tails for losses than for gains. With equal values it is the \code{"t"} model.
+\item \code{"skew_t_leverage"}: Skew t distribution with leverage. As in \code{"skew_gaussian_leverage"}, the
+ return shock \code{z_t} drives the volatility shock, \code{eta_t = rho * z_t + sqrt(1 - rho^2) * e_t}. Estimates
+ \code{df_left}, \code{df_right} and \code{rho}.
 }
 
 The parameters is estimated by minimizing the negative log-likelihood (nll) and the latent log-volatility is 
 integrated out by applying the Laplace approximation.
 }
+\section{Skew gaussian models}{
+
+The skew gaussian models report two numbers for the asymmetry of the standardized noise \code{z}:
+\itemize{
+\item \code{alpha}: the shape parameter of the skew normal density. \code{alpha = 0} gives the gaussian
+ distribution and \code{alpha -> Inf} the half-gaussian distribution. It has no direct statistical meaning.
+\item \code{skewness}: the skewness \code{E[z^3]} of the noise, a monotone function of \code{alpha}. With
+ \code{delta = alpha / sqrt(1 + alpha^2)} and \code{mu = delta * sqrt(2 / pi)},
+ \code{skewness = (4 - pi) / 2 * mu^3 / (1 - mu^2)^(3 / 2)}. For example, \code{alpha} = 0.5, 1, 2 and 5 give
+ \code{skewness} = 0.02, 0.14, 0.45 and 0.85.
+}
+The models estimate the skewness, not \code{alpha}. Close to zero the skewness grows like \code{alpha^3}, so the
+likelihood is flat in \code{alpha} at \code{alpha = 0} and the optimizer does not move from there.
+
+Use \code{summary(object, report = "transformed")} to get \code{skewness} and \code{alpha} with standard errors.
+Use \code{skewness} for inference. Use \code{alpha} when you need the shape parameter, for example in
+\code{\link{sim_sv}} or \code{sn::dsn}. Close to zero skewness, \code{alpha} changes fast with the skewness, so
+the standard error of \code{alpha} is very large even when the skewness is well determined. In the
+"skew_gaussian_leverage" model the skewness is that of the return shock, not of the returns.
+}
+
+\section{Skew t models}{
+
+The left tail of the noise decays like a Student t distribution with \code{df_left} degrees of freedom and the
+right tail like one with \code{df_right} degrees of freedom. A smaller value means a heavier tail. If
+\code{df_left < df_right}, large losses are more likely than large gains of the same size, and the noise is
+skewed to the left. Both values are greater than 2, so that the variance exists. They are estimated on the scale
+\code{log(df - 2)}.
+
+A light tail is hard to tell apart from a gaussian tail. If one tail is light, its estimated degrees of freedom
+can be very large and have a large standard error, and \code{nlminb} can report false convergence. This means
+that the data show no heavy tail on that side. The same is true for \code{df} in the \code{"t"} model. In both
+models the degrees of freedom are capped at 10,000, because the density cannot be calculated accurately for larger
+values. Short series (a few hundred observations) can also confuse heavy tails with a very noisy log-volatility.
+
+Hansen's (1994) skewed t distribution is not used, because its log density has a jump in the second
+derivative at the mode. This makes the Laplace approximation inaccurate and the optimization unstable.
+}
+
 \examples{
 \donttest{
 # load data
@@ -49,5 +98,13 @@ estimates <- summary(opt)
 
 # plot estimated volatility with 95 \% confidence interval
 plot(opt, include_ci = TRUE)
+
+# skew gaussian model with leverage
+opt_sgl <- estimate_parameters(spy$log_return, model = "skew_gaussian_leverage", silent = TRUE)
+summary(opt_sgl, report = "transformed")
 }
+}
+\references{
+Jones, M. C. and Faddy, M. J. (2003). A skew extension of the t-distribution, with applications.
+  Journal of the Royal Statistical Society: Series B, 65(1), 159-174. \doi{10.1111/1467-9868.00378}
 }

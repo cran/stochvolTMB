@@ -13,14 +13,20 @@
 #' variance equal to one. Asymmetric returns are obtained from the "skew_gaussian" model. How asymmetric is governed by
 #' the skewness parameter \code{alpha}. The so called leverage model, where we allow for correlation between 
 #' log-returns and volatility can be simulated by setting \code{model} to "leverage" and specifying the
-#' correlation parameter \code{rho}.
+#' correlation parameter \code{rho}. In the "skew_gaussian_leverage" model the return shock \code{z_t} is skew gaussian
+#' with mean zero, unit variance and shape \code{alpha}, and it drives the volatility shock:
+#' \code{h_{t+1} = phi * h_t + sigma_h * (rho * z_t + sqrt(1 - rho^2) * e_t)}, where \code{e_t} is standard gaussian.
 #'
 #' @param nobs Length of time series.
 #' @param param List of parameters. This includes the standard deviation of the observations, \code{sigma_y},
 #' the standard deviation of the latent volatility process, \code{sigma_h}, the persistence parameter \code{phi}. If
 #' \code{model} = "t", the degree of freedom \code{df} must be specified. If \code{model} = "skew_gaussian", 
-#' the skewness parameter \code{alpha} must be specified and if \code{model} = "leverage", 
+#' the shape parameter \code{alpha} must be specified (see the section on skew gaussian models in
+#' \code{\link{estimate_parameters}} for how \code{alpha} relates to the skewness) and if \code{model} = "leverage", 
 #' the correlation \code{rho} between the latent error term and the observational error has to be specified.
+#' If \code{model} = "skew_t", the degrees of freedom of the left and the right tail, \code{df_left} and
+#' \code{df_right}, must be specified. The "skew_t_leverage" model needs \code{df_left}, \code{df_right} and
+#' \code{rho}; like "skew_gaussian_leverage", the skew t return shock drives the volatility shock.
 #' @param seed Seed to reproduce simulation.
 #' @param model Distribution of error term.
 #' @return data.table with columns \code{y} (observations) and \code{h} (latent log-volatility).
@@ -105,7 +111,7 @@ sim_sv <- function(param = list(phi = 0.9, sigma_y = 0.4, sigma_h = 0.2, df = 4,
     attr(y, "parameters") <- NULL
     
   } else if (model == "leverage") {
-    
+
     if (abs(param$rho) >= 1) {
       stop("Correlation parameter `rho` is not between -1 and 1")
     }
@@ -117,7 +123,35 @@ sim_sv <- function(param = list(phi = 0.9, sigma_y = 0.4, sigma_h = 0.2, df = 4,
     # Remove the last value
     y <- y[-nobs]
     h <- h[-nobs]
-    
+
+  } else if (model == "skew_t") {
+
+    if (param$df_left <= 2 || param$df_right <= 2) {
+      stop("Degrees of freedom `df_left` and `df_right` have to be greater than 2")
+    }
+    y <- exp(h / 2) * sigma_y * rskew_t(nobs, param$df_left, param$df_right)
+
+  } else if (model %in% c("skew_gaussian_leverage", "skew_t_leverage")) {
+
+    if (abs(param$rho) >= 1) {
+      stop("Correlation parameter `rho` is not between -1 and 1")
+    }
+
+    # The skew return shock z drives the volatility shock, so h is simulated again here
+    rho <- param$rho
+    if (model == "skew_t_leverage") {
+      if (param$df_left <= 2 || param$df_right <= 2) {
+        stop("Degrees of freedom `df_left` and `df_right` have to be greater than 2")
+      }
+      z <- rskew_t(nobs, param$df_left, param$df_right)
+    } else {
+      z <- rsn_standard(nobs, param$alpha)
+    }
+    for (t in 2:nobs) {
+      h[t] <- phi * h[t - 1] + sigma_h * (rho * z[t - 1] + sqrt(1 - rho^2) * stats::rnorm(1))
+    }
+    y <- sigma_y * exp(h / 2) * z
+
   } else {
     stop(paste0("The model ", model, " has not been implemented"))
   }
@@ -128,6 +162,28 @@ sim_sv <- function(param = list(phi = 0.9, sigma_y = 0.4, sigma_h = 0.2, df = 4,
   attr(dt_sim, "model") <- model
   
   return(dt_sim)
+}
+
+#' Draw from the skew gaussian distribution standardized to mean zero and unit variance
+#' @param n Number of draws.
+#' @param alpha Shape parameter. Either a scalar or a vector of length \code{n}.
+#' @return Numeric vector of length \code{n}.
+#' @keywords internal
+rsn_standard <- function(n, alpha) {
+  delta <- alpha / sqrt(1 + alpha^2)
+  omega <- 1 / sqrt(1 - 2 * delta^2 / pi)
+  xi <- -omega * delta * sqrt(2 / pi)
+  xi + omega * (delta * abs(stats::rnorm(n)) + sqrt(1 - delta^2) * stats::rnorm(n))
+}
+
+#' Shape parameter of the skew gaussian distribution with a given skewness
+#' @param skewness Skewness, strictly between -0.9953 and 0.9953.
+#' @return The shape parameter \code{alpha}.
+#' @keywords internal
+skewness_to_alpha <- function(skewness) {
+  r <- sign(skewness) * (2 * abs(skewness) / (4 - pi))^(1 / 3)
+  delta <- r / sqrt(1 + r^2) / sqrt(2 / pi)
+  delta / sqrt(1 - delta^2)
 }
 
 #' Logit transformation from the real line to (-1, 1). 
@@ -166,11 +222,19 @@ simulate_parameters <- function(object, nsim = 1000) {
   # Transform sample to their original scale 
   par_sim[, grepl("log_sigma", colnames(par_sim))] <- exp(par_sim[, grepl("log_sigma", colnames(par_sim))]) 
   par_sim[, grepl("logit", colnames(par_sim))] <- logit(par_sim[, grepl("logit", colnames(par_sim))]) 
-  par_sim[, grepl("log_df_minus_two", colnames(par_sim))] <- exp(par_sim[, grepl("log_df_minus_two", colnames(par_sim))]) + 2 
+  df_cols <- grepl("^log_df.*_minus_two$", colnames(par_sim))
+  # Degrees of freedom are capped at 1e4 in the template (MAX_DF)
+  par_sim[, df_cols] <- pmin(exp(par_sim[, df_cols]), 1e4 - 2) + 2
+
+  # Skewness is bounded by 0.99 in the template (MAX_SKEWNESS)
+  if ("logit_skewness" %in% colnames(par_sim)) {
+    par_sim[, "logit_skewness"] <- 0.99 * par_sim[, "logit_skewness"]
+    par_sim <- cbind(par_sim, alpha = skewness_to_alpha(par_sim[, "logit_skewness"]))
+  }
   
   colnames(par_sim) <- gsub("log_sigma", "sigma", colnames(par_sim))
   colnames(par_sim) <- gsub("logit_", "", colnames(par_sim))
-  colnames(par_sim) <- gsub("log_df_minus_two", "df", colnames(par_sim))
+  colnames(par_sim) <- gsub("^log_(df.*)_minus_two$", "\\1", colnames(par_sim))
   
   return(par_sim)
   

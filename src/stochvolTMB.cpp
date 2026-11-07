@@ -1,18 +1,32 @@
 #define TMB_LIB_INIT R_init_stochvolTMB
 #include<TMB.hpp>
 
-// Skew normal distribution with mean zero and unit variance
+// Stable log(pnorm(x)): pnorm underflows in the far left tail, so use the Mills-ratio expansion
+// below x = -10. Both branches get clamped inputs so the AD tape never sees Inf/NaN.
+template<class Type>
+Type log_pnorm(Type x){
+  Type cut = Type(-10);
+  Type x_hi = CppAD::CondExpGe(x, cut, x, cut);
+  Type x_lo = CppAD::CondExpLt(x, cut, x, cut);
+  Type val_hi = log(pnorm(x_hi));
+  Type x2 = x_lo * x_lo;
+  Type val_lo = dnorm(x_lo, Type(0), Type(1), true) - log(-x_lo) +
+    log(Type(1) - Type(1) / x2 + Type(3) / (x2 * x2) - Type(15) / (x2 * x2 * x2));
+  return CppAD::CondExpGe(x, cut, val_hi, val_lo);
+}
+
+// Skew normal distribution with location xi, scale omega and shape alpha
 // @param x double. Where to evaluate density
-// @param alpha double. Skewness parameter 
-// @sigma_y double. Parameter from observational equation
-// @param h double. Latent variable 
+// @param alpha double. Shape parameter
+// @param omega double. Scale parameter
+// @param xi double. Location parameter
 // @param give_log bool. Return log of density
-template<class Type> 
+template<class Type>
 Type skew_norm(Type x, Type alpha, Type omega, Type xi, bool give_log){
-  Type dens = log(Type(2)) + dnorm(x, xi, omega, true) + log(Type(0.00001) + pnorm(alpha * (x - xi) / omega));
+  Type dens = log(Type(2)) + dnorm(x, xi, omega, true) + log_pnorm(alpha * (x - xi) / omega);
   if(give_log) return dens;
   else return exp(dens);
-  
+
 }
 
 
@@ -24,100 +38,197 @@ Type f(Type x){
   return(y);
 }
 
+// Shape alpha of a skew normal with skewness gamma1 (inverts gamma1 = (4 - pi) / 2 * mu^3 / (1 - mu^2)^(3 / 2),
+// mu = delta * sqrt(2 / pi)). Undefined derivative at gamma1 = 0, so never start the optimizer exactly there.
+template<class Type>
+Type skewness_to_alpha(Type gamma1){
+  Type abs_gamma1 = CppAD::CondExpGe(gamma1, Type(0), gamma1, -gamma1);
+  Type r = pow(Type(2) * abs_gamma1 / (Type(4) - M_PI), Type(1) / Type(3));
+  r = CppAD::CondExpGe(gamma1, Type(0), r, -r);
+  Type delta = r / sqrt(Type(1) + r * r) / sqrt(Type(2) / M_PI);
+  return delta / sqrt(Type(1) - delta * delta);
+}
 
-template<class Type> 
+// Above this, lgamma differences in the t densities lose all precision and the optimizer climbs on rounding
+// noise. At 1e4 degrees of freedom the t distribution is gaussian for all practical purposes.
+#define MAX_DF 1e4
+
+// log(df - 2) capped at log(MAX_DF - 2). Below the cap it is unchanged, above it the likelihood is flat.
+template<class Type>
+Type capped_log_df_minus_two(Type x){
+  Type cap = log(Type(MAX_DF) - Type(2));
+  return CppAD::CondExpLt(x, cap, x, cap);
+}
+
+// Theoretical bound is 0.9953 (alpha -> Inf); 0.99 caps |alpha| at about 27, away from the half-normal limit.
+#define MAX_SKEWNESS 0.99
+
+
+template<class Type>
 Type objective_function<Type>::operator()(){
-  
+
   // Data-----------------
   DATA_VECTOR(y);
   DATA_INTEGER(model);
   DATA_VECTOR_INDICATOR(keep, y);  // For one-step predictions
-  
+
   // Parameters-----------------
-  PARAMETER(log_sigma_y); 
+  PARAMETER(log_sigma_y);
   PARAMETER(log_sigma_h);
-  PARAMETER(logit_phi); 
+  PARAMETER(logit_phi);
   PARAMETER_VECTOR(log_df_minus_two); // Degrees of freedom in t-distribution
-  PARAMETER_VECTOR(alpha); // Skewness parameter in skew normal model
+  // Skewness in skew normal models. Estimated instead of alpha because the likelihood is flat
+  // (~ alpha^3) at alpha = 0, which traps the optimizer, but it is regular in the skewness.
+  PARAMETER_VECTOR(logit_skewness);
   PARAMETER_VECTOR(logit_rho); // Correlation in leverage model
-  PARAMETER_VECTOR(h); // Latent process 
-  
+  PARAMETER_VECTOR(log_df_left_minus_two); // Left tail degrees of freedom in skew t model
+  PARAMETER_VECTOR(log_df_right_minus_two); // Right tail degrees of freedom in skew t model
+  PARAMETER_VECTOR(h); // Latent process
+
   // Transform parameters------------------
   Type sigma_y = exp(log_sigma_y);
-  Type sigma_h = exp(log_sigma_h); 
-  Type phi = f(logit_phi); 
-  
-  ADREPORT(sigma_y); 
-  ADREPORT(sigma_h); 
-  ADREPORT(phi); 
-  
+  Type sigma_h = exp(log_sigma_h);
+  Type phi = f(logit_phi);
+
+  ADREPORT(sigma_y);
+  ADREPORT(sigma_h);
+  ADREPORT(phi);
+
+  // Standardized skew normal (mean zero, unit variance): shape alpha, scale omega0, location xi0
+  Type skewness = 0, alpha = 0, delta = 0, omega0 = 1, xi0 = 0;
+  if(model == 2 || model == 4){
+    skewness = Type(MAX_SKEWNESS) * f(logit_skewness(0));
+    alpha = skewness_to_alpha(skewness);
+    delta = alpha / sqrt(Type(1) + alpha * alpha);
+    omega0 = Type(1) / sqrt(Type(1) - Type(2) * delta * delta / M_PI);
+    xi0 = -omega0 * delta * sqrt(Type(2) / M_PI);
+    ADREPORT(skewness);
+    ADREPORT(alpha);
+  }
+
+  // Jones-Faddy skew t, standardized to mean zero and unit variance. a and b set the left and right tail.
+  Type a_st = 0, b_st = 0, mu_st = 0, sd_st = 1, logc_st = 0;
+  if(model == 5 || model == 6){
+    Type df_left = exp(capped_log_df_minus_two(log_df_left_minus_two(0))) + Type(2);
+    Type df_right = exp(capped_log_df_minus_two(log_df_right_minus_two(0))) + Type(2);
+    ADREPORT(df_left);
+    ADREPORT(df_right);
+    a_st = df_left / Type(2);
+    b_st = df_right / Type(2);
+    mu_st = (a_st - b_st) * sqrt(a_st + b_st) / Type(2) *
+      exp(lgamma(a_st - Type(0.5)) + lgamma(b_st - Type(0.5)) - lgamma(a_st) - lgamma(b_st));
+    Type m2 = (a_st + b_st) / Type(4) * ((a_st - b_st) * (a_st - b_st) + a_st + b_st - Type(2)) /
+      ((a_st - Type(1)) * (b_st - Type(1)));
+    sd_st = sqrt(m2 - mu_st * mu_st);
+    logc_st = -(a_st + b_st - Type(1)) * log(Type(2)) - (lgamma(a_st) + lgamma(b_st) - lgamma(a_st + b_st)) -
+      Type(0.5) * log(a_st + b_st);
+  }
+
+  Type rho = 0;
+  if(model == 3 || model == 4 || model == 6){
+    rho = f(logit_rho(0));
+    ADREPORT(rho);
+  }
+
   // Negative log likelihood
-  Type nll = 0; 
+  Type nll = 0;
   int N = y.size();
-  
+
   // Contribution from latent process
   // Assume stationary distribution
-  nll -= dnorm(h(0), Type(0), sigma_h / sqrt(1 - phi * phi), true); 
-  
+  nll -= dnorm(h(0), Type(0), sigma_h / sqrt(1 - phi * phi), true);
+
   for(int i = 1; i < N; i++){
-    nll -= dnorm(h(i), phi * h(i - 1), sigma_h, true); 
+    nll -= dnorm(h(i), phi * h(i - 1), sigma_h, true);
   }
-  
+
   // Contribution from observations
-  
+
   for(int i = 0; i < N; i++){
-    
+
     switch(model){
-      
+
     // Gaussian
     case 0:
       nll -= keep(i) * dnorm(y(i), Type(0), exp(h(i) / Type(2)) * sigma_y, true);
       break;
-    
+
     // Centered t-distribution
     // last term is contribution from jacobian of linear transformation y = a * x
     case 1:{
-      Type df = exp(log_df_minus_two(0)) + Type(2); // To assure that the variance exist
-      if(i == 0) ADREPORT(df); 
-      Type normalization = exp(h(i) / 2) * sigma_y * sqrt((df - Type(2)) / df); 
+      Type df = exp(capped_log_df_minus_two(log_df_minus_two(0))) + Type(2); // To ensure that the variance exist
+      if(i == 0) ADREPORT(df);
+      Type normalization = exp(h(i) / 2) * sigma_y * sqrt((df - Type(2)) / df);
       nll -= keep(i) * (dt(y(i) / normalization, df, true) - log(normalization));
-      break; 
+      break;
       }
-    
+
     // Skew normal distribution
     case 2:{
       Type scale = sigma_y * exp(h(i) / Type(2));
-      Type delta = alpha(0) / sqrt(1 + alpha(0) * alpha(0)); 
-      Type omega = scale / sqrt(Type(1) - Type(2) * delta * delta / M_PI); 
-      Type xi = - omega * delta * sqrt(Type(2) / M_PI);
-      nll -= keep(i) * skew_norm(y(i), alpha(0), omega, xi, true);
+      nll -= keep(i) * skew_norm(y(i), alpha, omega0 * scale, xi0 * scale, true);
       break;
       }
-    
+
     // Leverage model - normal distribution
     case 3:{
-      Type rho = f(logit_rho(0));
-      if(i == 0){
-        ADREPORT(rho); // only report once
-      }
       if(i < (N - 1)){
-        Type eta = (h(i + 1) - phi * h(i)) / sigma_h; 
-        nll -= keep(i) * dnorm(y(i), sigma_y * exp(h(i) / Type(2)) * rho * eta, sigma_y * exp(h(i) / Type(2)) * sqrt(Type(1) - rho * rho), true); 
+        Type eta = (h(i + 1) - phi * h(i)) / sigma_h;
+        nll -= keep(i) * dnorm(y(i), sigma_y * exp(h(i) / Type(2)) * rho * eta, sigma_y * exp(h(i) / Type(2)) * sqrt(Type(1) - rho * rho), true);
       }
       break;
     }
-      
-    // TODO: 
-    // Skew t distribution
-    // Skew gaussian with leverage
-    // Skew t with leverage
-    
+
+    // Skew gaussian with leverage: eta(i) = rho * z(i) + sqrt(1 - rho^2) * e(i), z(i) skew normal return shock.
+    // The reverse order (skew noise added to rho * eta) is very sharp in h(i + 1) and breaks the Laplace approximation.
+    case 4:{
+      Type scale = sigma_y * exp(h(i) / Type(2));
+      Type obs = skew_norm(y(i), alpha, omega0 * scale, xi0 * scale, true);
+      if(i < (N - 1)){
+        // Factorise as p(h(i + 1) | h(i)) * p(y(i) | h(i), h(i + 1)) so y only enters keep-weighted terms (OSA residuals).
+        // Marginally eta is skew normal, since it is a skew normal plus an independent gaussian.
+        Type c = sqrt(Type(1) - rho * rho);
+        Type z = y(i) / scale;
+        Type eta = (h(i + 1) - phi * h(i)) / sigma_h;
+        Type omega_eta = sqrt(rho * rho * omega0 * omega0 + c * c);
+        Type delta_eta = rho * omega0 * delta / omega_eta;
+        Type alpha_eta = delta_eta / sqrt(Type(1) - delta_eta * delta_eta);
+        Type log_p_eta = skew_norm(eta, alpha_eta, omega_eta, rho * xi0, true);
+        // Replace the gaussian AR(1) term added above with the skew normal transition
+        nll -= log_p_eta - dnorm(eta, Type(0), Type(1), true);
+        obs += dnorm(eta, rho * z, c, true) - log_p_eta;
+      }
+      nll -= keep(i) * obs;
+      break;
+    }
+
+    // Skew t distribution (Jones and Faddy 2003). The density is smooth, unlike Hansen's skewed t whose
+    // curvature jumps at the mode; that jump broke the Laplace approximation and the optimizer.
+    // Skew t with leverage: same order as model 4, the skew t return shock z(i) drives the volatility shock,
+    // eta(i) = rho * z(i) + sqrt(1 - rho^2) * e(i).
+    case 5:
+    case 6:{
+      Type scale = sigma_y * exp(h(i) / Type(2));
+      Type t = mu_st + sd_st * y(i) / scale;
+      Type r = t / sqrt(a_st + b_st + t * t);
+      nll -= keep(i) * (logc_st + (a_st + Type(0.5)) * log(Type(1) + r) + (b_st + Type(0.5)) * log(Type(1) - r) +
+        log(sd_st) - log(scale));
+      if(model == 6 && i < (N - 1)){
+        // Replace the gaussian AR(1) term with h(i + 1) | h(i), y(i). Marginally eta has no closed form here, so
+        // unlike model 4 this term contains y(i) without keep, and TMB::oneStepPredict cannot be used.
+        Type c = sqrt(Type(1) - rho * rho);
+        Type eta = (h(i + 1) - phi * h(i)) / sigma_h;
+        Type z = y(i) / scale;
+        nll -= dnorm(eta, rho * z, c, true) - dnorm(eta, Type(0), Type(1), true);
+      }
+      break;
+    }
+
     default:
       Rf_error("This distribution is not implementet!");
       break;
     }
   }
 
-  return nll; 
+  return nll;
 }
-  
